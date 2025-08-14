@@ -23,7 +23,7 @@ import hashlib
 
 # 로깅 설정
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,  # 디버그 레벨로 변경
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler('maplestory_aes_packets.log', encoding='utf-8'),
@@ -35,12 +35,7 @@ class MapleAES:
     """메이플스토리 AES 복호화 클래스 (MapleShark 기반)"""
     
     def __init__(self):
-        # 메이플스토리 기본 AES 키 (MapleShark에서 가져옴)
-        self.default_key = b'MapleStory'
-        self.version_key = b'1'
-        self.iv = b'\x00' * 16  # 초기화 벡터
-        
-        # 버전별 키 매핑
+        # MapleShark의 실제 키 생성 방식
         self.version_keys = {
             'GMS': b'GMS',
             'KMS': b'KMS', 
@@ -51,22 +46,28 @@ class MapleAES:
             'EMS': b'EMS'
         }
         
-        # 현재 사용 중인 키
+        # 현재 사용 중인 키와 IV
         self.current_key = None
         self.current_iv = None
         
+        # 메이플스토리 기본 키 (MapleShark에서 가져옴)
+        self.base_key = b'MapleStory'
+        
     def generate_key(self, version='GMS'):
-        """버전별 AES 키 생성 (MapleShark 방식)"""
+        """MapleShark 방식으로 AES 키 생성"""
         if version in self.version_keys:
-            base_key = self.version_keys[version]
+            version_key = self.version_keys[version]
         else:
-            base_key = self.default_key
+            version_key = b'GMS'  # 기본값
             
-        # MapleShark 방식으로 키 생성
-        key_material = base_key + self.version_key
+        # MapleShark의 실제 키 생성 방식
+        # 1. 기본 키와 버전 키를 결합
+        key_material = self.base_key + version_key
+        
+        # 2. MD5 해시로 16바이트 키 생성
         key_hash = hashlib.md5(key_material).digest()
         
-        # 16바이트 키로 확장
+        # 3. 16바이트로 정확히 맞춤
         if len(key_hash) < 16:
             key_hash = key_hash + b'\x00' * (16 - len(key_hash))
         elif len(key_hash) > 16:
@@ -77,42 +78,48 @@ class MapleAES:
     def set_version(self, version='GMS'):
         """버전 설정 및 키 업데이트"""
         self.current_key = self.generate_key(version)
-        self.current_iv = self.iv
+        # MapleShark는 IV를 0으로 설정
+        self.current_iv = b'\x00' * 16
         logging.info(f"AES 키 설정 완료: {version} 버전")
+        logging.info(f"키 (hex): {self.current_key.hex()}")
         
     def decrypt_packet(self, encrypted_data):
-        """AES 복호화 수행"""
+        """MapleShark 방식으로 AES 복호화 수행"""
         if not self.current_key:
             self.set_version()  # 기본 키 사용
             
         try:
-            # 패킷 헤더 확인 (메이플스토리 패킷 구조)
+            # 메이플스토리 패킷 구조 확인
             if len(encrypted_data) < 4:
                 return None, "패킷이 너무 짧습니다"
                 
-            # 패킷 길이 추출 (첫 2바이트)
-            packet_length = struct.unpack('<H', encrypted_data[:2])[0]
-            
-            if packet_length != len(encrypted_data):
-                return None, f"패킷 길이 불일치: 예상 {packet_length}, 실제 {len(encrypted_data)}"
+            # MapleShark 방식: 패킷 길이 확인 (첫 2바이트)
+            try:
+                packet_length = struct.unpack('<H', encrypted_data[:2])[0]
+                logging.debug(f"패킷 길이: {packet_length}, 실제 길이: {len(encrypted_data)}")
+            except struct.error:
+                return None, "패킷 길이 파싱 실패"
                 
-            # 실제 데이터 부분 (헤더 제외)
+            # 실제 암호화된 데이터 (헤더 제외)
             data_to_decrypt = encrypted_data[2:]
             
-            # 16바이트 블록으로 패딩
+            # 16바이트 블록으로 패딩 확인
             if len(data_to_decrypt) % 16 != 0:
                 padding_needed = 16 - (len(data_to_decrypt) % 16)
                 data_to_decrypt += b'\x00' * padding_needed
+                logging.debug(f"패딩 추가: {padding_needed} 바이트")
                 
-            # AES 복호화
-            cipher = AES.new(self.current_key, AES.MODE_ECB)
+            # MapleShark는 CBC 모드를 사용 (ECB가 아님)
+            cipher = AES.new(self.current_key, AES.MODE_CBC, self.current_iv)
             decrypted_data = cipher.decrypt(data_to_decrypt)
             
-            # 패딩 제거 시도
+            # PKCS7 패딩 제거 시도
             try:
                 decrypted_data = unpad(decrypted_data, 16)
+                logging.debug("PKCS7 패딩 제거 성공")
             except ValueError:
                 # 패딩이 없는 경우 그대로 사용
+                logging.debug("PKCS7 패딩 없음, 원본 데이터 사용")
                 pass
                 
             return decrypted_data, None
@@ -121,24 +128,33 @@ class MapleAES:
             return None, f"복호화 오류: {str(e)}"
             
     def is_maplestory_packet(self, data):
-        """메이플스토리 패킷인지 확인"""
+        """메이플스토리 패킷인지 확인 (MapleShark 방식)"""
         if len(data) < 4:
             return False
             
         try:
-            # 패킷 길이 확인
+            # 패킷 길이 확인 (첫 2바이트)
             packet_length = struct.unpack('<H', data[:2])[0]
             
             # 메이플스토리 패킷 길이 범위 확인
-            if 4 <= packet_length <= 65535 and packet_length == len(data):
-                return True
-                
-            # 메이플스토리 시그니처 확인
-            if data.startswith(b'Maple') or b'Maple' in data:
-                return True
-                
-        except:
+            if 4 <= packet_length <= 65535:
+                # 길이가 일치하는지 확인
+                if packet_length == len(data):
+                    return True
+                # 또는 길이가 실제 데이터보다 작은 경우 (일부 패킷)
+                elif packet_length <= len(data):
+                    return True
+                    
+        except struct.error:
             pass
+            
+        # 메이플스토리 시그니처 확인
+        if data.startswith(b'Maple') or b'Maple' in data:
+            return True
+            
+        # 특정 포트나 패턴으로 메이플스토리 패킷 추정
+        if len(data) > 10 and data[0] == 0x00 and data[1] == 0x00:
+            return True
             
         return False
 
@@ -219,7 +235,7 @@ class MaplePacketAnalyzer:
         return '\n'.join(lines)
 
     def analyze_packet_content(self, data, decrypted_data=None):
-        """패킷 내용 분석 및 분류 (AES 복호화 포함)"""
+        """패킷 내용 분석 및 분류 (MapleShark AES 복호화 포함)"""
         analysis = {
             'size': len(data),
             'strings': [],
@@ -228,8 +244,19 @@ class MaplePacketAnalyzer:
             'type': 'unknown',
             'encrypted': False,
             'decrypted': False,
-            'decrypted_strings': []
+            'decrypted_strings': [],
+            'packet_info': {}
         }
+        
+        # 메이플스토리 패킷 정보 추출
+        if len(data) >= 4:
+            try:
+                packet_length = struct.unpack('<H', data[:2])[0]
+                analysis['packet_info']['length'] = packet_length
+                analysis['packet_info']['header'] = data[:4].hex()
+            except struct.error:
+                analysis['packet_info']['length'] = 'unknown'
+                analysis['packet_info']['header'] = 'invalid'
         
         # 원본 데이터에서 문자열 추출
         analysis['strings'] = self.extract_strings(data)
@@ -272,12 +299,12 @@ class MaplePacketAnalyzer:
         return analysis
 
     def packet_callback(self, packet):
-        """패킷 캡처 콜백 (AES 복호화 포함)"""
+        """패킷 캡처 콜백 (MapleShark AES 복호화 포함)"""
         try:
             if Raw in packet:
                 raw_data = packet[Raw].load
                 
-                # 메이플스토리 패킷인지 확인
+                # 메이플스토리 패킷인지 확인 (MapleShark 방식)
                 is_maplestory = self.aes_decryptor.is_maplestory_packet(raw_data)
                 
                 # AES 복호화 시도
@@ -285,7 +312,13 @@ class MaplePacketAnalyzer:
                 decrypt_error = None
                 
                 if is_maplestory:
+                    logging.debug(f"메이플스토리 패킷 감지: {len(raw_data)} bytes")
                     decrypted_data, decrypt_error = self.aes_decryptor.decrypt_packet(raw_data)
+                    
+                    if decrypted_data:
+                        logging.debug(f"복호화 성공: {len(decrypted_data)} bytes")
+                    else:
+                        logging.debug(f"복호화 실패: {decrypt_error}")
                 
                 # 패킷 정보 수집
                 packet_info = {
@@ -356,7 +389,7 @@ class MaplePacketAnalyzer:
         
         # 로그 출력
         log_msg = f"""
-=== 패킷 분석 결과 ===
+=== 패킷 분석 결과 (MapleShark 방식) ===
 시간: {packet_info['timestamp']}
 소스: {packet_info['src_ip']}:{packet_info['src_port']}
 목적지: {packet_info['dst_ip']}:{packet_info['dst_port']}
@@ -368,6 +401,11 @@ AES 복호화: {'성공' if analysis['decrypted'] else '실패'}
 패턴: {', '.join(analysis['patterns']) if analysis['patterns'] else '없음'}
 의심스러움: {'예' if analysis['suspicious'] else '아니오'}
 """
+        
+        # MapleShark 패킷 정보 추가
+        if analysis['packet_info']:
+            log_msg += f"패킷 헤더: {analysis['packet_info'].get('header', 'N/A')}\n"
+            log_msg += f"패킷 길이: {analysis['packet_info'].get('length', 'N/A')}\n"
         
         # 복호화 오류가 있으면 표시
         if packet_info['decrypt_error']:
@@ -453,12 +491,54 @@ AES 복호화: {'성공' if analysis['decrypted'] else '실패'}
         for key, value in self.packet_stats.items():
             logging.info(f"{key}: {value}")
 
+def test_maple_aes():
+    """MapleShark AES 복호화 테스트 함수"""
+    print("=== MapleShark AES 복호화 테스트 ===")
+    
+    aes = MapleAES()
+    
+    # 다양한 버전으로 키 생성 테스트
+    versions = ['GMS', 'KMS', 'JMS']
+    for version in versions:
+        aes.set_version(version)
+        print(f"{version} 버전 키: {aes.current_key.hex()}")
+    
+    # 테스트 데이터로 복호화 테스트
+    print("\n=== 복호화 테스트 ===")
+    
+    # 가상의 메이플스토리 패킷 (길이 + 데이터)
+    test_data = b'\x00\x10' + b'TestPacketData' + b'\x00' * 2  # 16바이트로 맞춤
+    
+    print(f"테스트 데이터: {test_data.hex()}")
+    print(f"데이터 길이: {len(test_data)} bytes")
+    
+    # 패킷 감지 테스트
+    is_maplestory = aes.is_maplestory_packet(test_data)
+    print(f"메이플스토리 패킷: {'예' if is_maplestory else '아니오'}")
+    
+    # 복호화 테스트 (실제로는 암호화된 데이터여야 함)
+    if is_maplestory:
+        decrypted, error = aes.decrypt_packet(test_data)
+        if decrypted:
+            print(f"복호화 성공: {len(decrypted)} bytes")
+            print(f"복호화된 데이터: {decrypted.hex()}")
+        else:
+            print(f"복호화 실패: {error}")
+    
+    print("\n테스트 완료!")
+
 def main():
     """메인 함수"""
-    print("=== 메이플스토리 패킷 분석기 (AES 복호화 포함) ===")
+    print("=== 메이플스토리 패킷 분석기 (MapleShark AES 복호화) ===")
     print("고성능 패킷 감지 및 내용 추출 도구")
     print("MapleShark 기반 AES 복호화 구현")
     print()
+    
+    # 테스트 모드 확인
+    test_mode = input("테스트 모드를 실행하시겠습니까? (y/n, 기본값: n): ").strip().lower()
+    if test_mode in ['y', 'yes', '예']:
+        test_maple_aes()
+        print()
     
     analyzer = MaplePacketAnalyzer()
     
