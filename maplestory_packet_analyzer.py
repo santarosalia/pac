@@ -9,8 +9,6 @@ import psutil
 import threading
 import time
 import re
-import struct
-import json
 from datetime import datetime
 from collections import defaultdict, deque
 from scapy.all import sniff, Raw, IP, TCP, UDP
@@ -182,6 +180,8 @@ class MaplePacketAnalyzer:
         """패킷 분석 및 로깅"""
         analysis = self.analyze_packet_content(packet_info['data'])
         
+        if not (analysis['patterns'] and 'chat' in analysis['patterns']):
+            return
         # 통계 업데이트
         self.packet_stats[analysis['type']] += 1
         self.packet_stats['total'] += 1
@@ -195,25 +195,25 @@ class MaplePacketAnalyzer:
         })
         
         # 로그 출력
-        log_msg = f"""
-=== 패킷 분석 결과 ===
-시간: {packet_info['timestamp']}
-소스: {packet_info['src_ip']}:{packet_info['src_port']}
-목적지: {packet_info['dst_ip']}:{packet_info['dst_port']}
-프로토콜: {packet_info['protocol']}
-크기: {packet_info['size']} bytes
-타입: {analysis['type']}
-패턴: {', '.join(analysis['patterns']) if analysis['patterns'] else '없음'}
-의심스러움: {'예' if analysis['suspicious'] else '아니오'}
-"""
-        
-        if analysis['strings']:
-            log_msg += f"\n추출된 문자열:\n"
-            for i, s in enumerate(analysis['strings'][:10]):  # 최대 10개만
-                log_msg += f"  {i+1}. {s}\n"
+#         log_msg = f"""
+# === 패킷 분석 결과 ===
+# 시간: {packet_info['timestamp']}
+# 소스: {packet_info['src_ip']}:{packet_info['src_port']}
+# 목적지: {packet_info['dst_ip']}:{packet_info['dst_port']}
+# 프로토콜: {packet_info['protocol']}
+# 크기: {packet_info['size']} bytes
+# 타입: {analysis['type']}
+# 패턴: {', '.join(analysis['patterns']) if analysis['patterns'] else '없음'}
+# 의심스러움: {'예' if analysis['suspicious'] else '아니오'}
+# """
+        log_msg = ""
+        # if analysis['strings']:
+            # log_msg += f"\n추출된 문자열:\n"
+            # for i, s in enumerate(analysis['strings'][:10]):  # 최대 10개만
+            #     log_msg += f"  {i+1}. {s}\n"
                 
         if analysis['suspicious'] or len(analysis['strings']) > 0:
-            log_msg += f"\n원시 데이터:\n{self.format_hex_ascii(packet_info['data'])}\n"
+            # log_msg += f"\n원시 데이터:\n{self.format_hex_ascii(packet_info['data'])}\n"
             log_msg += f"\nUTF-8 디코딩:\n{packet_info['data'].decode('utf-8', errors='ignore')}\n"
             
         logging.info(log_msg)
