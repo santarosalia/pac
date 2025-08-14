@@ -214,6 +214,7 @@ class MaplePacketAnalyzer:
                 
         if analysis['suspicious'] or len(analysis['strings']) > 0:
             log_msg += f"\n원시 데이터:\n{self.format_hex_ascii(packet_info['data'])}\n"
+            log_msg += f"\nUTF-8 디코딩:\n{packet_info['data'].decode('utf-8', errors='ignore')}\n"
             
         logging.info(log_msg)
 
